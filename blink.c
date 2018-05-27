@@ -1,352 +1,222 @@
-/******************************************************************************
- * Copyright 2017 Google
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *    http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *****************************************************************************/
-// [START iot_mqtt_include]
-#define _XOPEN_SOURCE 500
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include <unistd.h>
-
-#include "jwt.h"
-#include "openssl/ec.h"
-#include "openssl/evp.h"
-#include "MQTTClient.h"
-// [END iot_mqtt_include]
-
 #include "espressif/esp_common.h"
 #include "esp/uart.h"
-#include "FreeRTOS.h"
-#include "task.h"
-#include "i2c/i2c.h"
-#include "bmp280/bmp280.h"
-#include "ssid_config.h"
-#include "ota-tftp.h"
-#include "httpd/httpd.h"
 
-#define PCF_ADDRESS	0x38
-#define MPU_ADDRESS	0x68
-#define BUS_I2C		0
-#define SCL 14
-#define SDA 12
+#include <string.h>
 
-//					mask	returned value
-#define button1		0x20	// 0b ??0? ????
-#define button2		0x10	// 0b ???0 ????
-#define button3		0x80	// 0b 0??? ????
-#define button4		0x40	// 0b ?0?? ????
-#define clr_btn		0xf0
+#include <FreeRTOS.h>
+#include <task.h>
+#include <ssid_config.h>
 
-#define led1 		0xfe	// 0b ???? ???0
-#define led2 		0xfd	// 0b ???? ??0?
-#define led3 		0xfb	// 0b ???? ?0??
-#define led4 		0xf7	// 0b ???? 0???
-#define leds_off	0xff
+#include <espressif/esp_sta.h>
+#include <espressif/esp_wifi.h>
 
-#define gpio_wemos_led	2
+#include <paho_mqtt_c/MQTTESP8266.h>
+#include <paho_mqtt_c/MQTTClient.h>
 
-#define TRACE 1 /* Set to 1 to enable tracing */
+#include <semphr.h>
 
-struct {
-  char* address;
-  enum { clientid_maxlen = 256, clientid_size };
-  char clientid[clientid_size];
-  char* deviceid;
-  char* ecpath;
-  char* projectid;
-  char* region;
-  char* registryid;
-  char* rootpath;
-  char* topic;
-  char* payload;
-} opts = {
-  .address = "ssl://mqtt.googleapis.com:8883",
-  .clientid = "projects/{your-project-id}/locations/{your-region-id}/registries/{your-registry-id}/devices/{your-device-id}",
-  .deviceid = "{your-device-id}",
-  .ecpath = "ec_private.pem",
-  .projectid = "intense-wavelet-343",
-  .region = "{your-region-id}",
-  .registryid = "{your-registry-id}",
-  .rootpath = "roots.pem",
-  .topic = "/devices/{your-device-id}/events",
-  .payload = "Hello world!"
-};
 
-void Usage() {
-  printf("mqtt_ciotc <message> \\\n");
-  printf("\t--deviceid <your device id>\\\n");
-  printf("\t--region <e.g. us-central1>\\\n");
-  printf("\t--registryid <your registry id>\\\n");
-  printf("\t--projectid <your project id>\\\n");
-  printf("\t--ecpath <e.g. ./ec_private.pem>\\\n");
-  printf("\t--rootpath <e.g. ./roots.pem>\n\n");
-}
+#define MQTT_HOST ("15kw3c.messaging.internetofthings.ibmcloud.com")
+#define MQTT_PORT 1883
+#define MQTT_USER "use-token-auth"
+#define MQTT_PASS "Hiue1T)1X22R6OIrYQ"
+#define CLIENT_ID "d:15kw3c:temp-sensor:temp-sensor-1"
+#define MQTT_TOPIC "iot-2/evt/status/fmt/txt"
 
-// [START iot_mqtt_jwt]
-/**
- * Calculates issued at / expiration times for JWT and places the time, as a
- * Unix timestamp, in the strings passed to the function. The time_size
- * parameter specifies the length of the string allocated for both iat and exp.
- */
-static void GetIatExp(char* iat, char* exp, int time_size) {
-  // TODO: Use time.google.com for iat
-  time_t now_seconds = time(NULL);
-  snprintf(iat, time_size, "%lu", now_seconds);
-  snprintf(exp, time_size, "%lu", now_seconds + 3600);
-  if (TRACE) {
-    printf("IAT: %s\n", iat);
-    printf("EXP: %s\n", exp);
-  }
-}
+SemaphoreHandle_t wifi_alive;
+QueueHandle_t publish_queue;
+#define PUB_MSG_LEN 16
 
-/**
- * Calculates a Java Web Token (JWT) given the path to a EC private key and
- * Google Cloud project ID. Returns the JWT as a string that the caller must
- * free.
- */
-static char* CreateJwt(const char* ec_private_path, const char* project_id) {
-  char iat_time[sizeof(time_t) * 3 + 2];
-  char exp_time[sizeof(time_t) * 3 + 2];
-  uint8_t* key = NULL; // Stores the Base64 encoded certificate
-  size_t key_len = 0;
-  jwt_t *jwt = NULL;
-  int ret = 0;
-  char *out = NULL;
 
-  // Read private key from file
-  FILE *fp = fopen(ec_private_path, "r");
-  if (fp == (void*) NULL) {
-    printf("Could not open file: %s\n", ec_private_path);
-    return "";
-  }
-  fseek(fp, 0L, SEEK_END);
-  key_len = ftell(fp);
-  fseek(fp, 0L, SEEK_SET);
-  key = malloc(sizeof(uint8_t) * (key_len + 1)); // certificate length + \0
+static void  beat_task(void *pvParameters)
+{
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+    char msg[PUB_MSG_LEN];
+    int count = 0;
 
-  fread(key, 1, key_len, fp);
-  key[key_len] = '\0';
-  fclose(fp);
-
-  // Get JWT parts
-  GetIatExp(iat_time, exp_time, sizeof(iat_time));
-
-  jwt_new(&jwt);
-
-  // Write JWT
-  ret = jwt_add_grant(jwt, "iat", iat_time);
-  if (ret) {
-    printf("Error setting issue timestamp: %d", ret);
-  }
-  ret = jwt_add_grant(jwt, "exp", exp_time);
-  if (ret) {
-    printf("Error setting expiration: %d", ret);
-  }
-  ret = jwt_add_grant(jwt, "aud", project_id);
-  if (ret) {
-    printf("Error adding audience: %d", ret);
-  }
-  ret = jwt_set_alg(jwt, JWT_ALG_ES256, key, key_len);
-  if (ret) {
-    printf("Error during set alg: %d", ret);
-  }
-  out = jwt_encode_str(jwt);
-
-  // Print JWT
-  if (TRACE) {
-    printf("JWT: [%s]", out);
-  }
-
-  jwt_free(jwt);
-  free(key);
-  return out;
-}
-// [END iot_mqtt_jwt]
-
-/**
- * Helper to parse arguments passed to app. Returns false if there are missing
- * or invalid arguments; otherwise, returns true indicating the caller should
- * free the calculated client ID placed on the opts structure.
- *
- * TODO: (class) Consider getopt
- */
-// [START iot_mqtt_opts]
-bool GetOpts(int argc, char** argv) {
-  int pos = 1;
-  bool calcvalues = false;
-
-  if (argc < 2) {
-    return false;
-  }
-
-  opts.payload = argv[1];
-
-  while (pos < argc) {
-    if (strcmp(argv[pos], "--deviceid") == 0) {
-      if (++pos < argc) {
-        opts.deviceid = argv[pos];
-        calcvalues = true;
-      }
-      else
-        return false;
-    } else if (strcmp(argv[pos], "--region") == 0) {
-      if (++pos < argc) {
-        opts.region = argv[pos];
-        calcvalues = true;
-      }
-      else
-        return false;
-    } else if (strcmp(argv[pos], "--registryid") == 0) {
-      if (++pos < argc) {
-        opts.registryid = argv[pos];
-        calcvalues = true;
-      }
-      else
-        return false;
-    } else if (strcmp(argv[pos], "--projectid") == 0) {
-      if (++pos < argc) {
-        opts.projectid = argv[pos];
-        calcvalues = true;
-      }
-      else
-        return false;
-    } else if (strcmp(argv[pos], "--ecpath") == 0) {
-      if (++pos < argc)
-        opts.ecpath = argv[pos];
-      else
-        return false;
-    } else if (strcmp(argv[pos], "--rootpath") == 0) {
-      if (++pos < argc)
-        opts.rootpath = argv[pos];
-      else
-        return false;
+    while (1) {
+        vTaskDelayUntil(&xLastWakeTime, 10000 / portTICK_PERIOD_MS);
+        printf("beat\r\n");
+        snprintf(msg, PUB_MSG_LEN, "Beat %d\r\n", count++);
+        if (xQueueSend(publish_queue, (void *)msg, 0) == pdFALSE) {
+            printf("Publish queue overflow.\r\n");
+        }
     }
-    pos++;
-  }
-
-  if (calcvalues) {
-    int n = snprintf(opts.clientid, sizeof(opts.clientid),
-        "projects/%s/locations/%s/registries/%s/devices/%s",
-        opts.projectid, opts.region, opts.registryid, opts.deviceid);
-    if (n < 0 || (n > clientid_maxlen)) {
-      if (n < 0) {
-        printf("Encoding error!\n");
-      } else {
-        printf("Error, buffer for storing client ID was too small.\n");
-      }
-      return false;
-    }
-    if (TRACE) {
-      printf("New client id constructed:\n");
-      printf("%s\n", opts.clientid);
-    }
-
-    return true; // Caller must free opts.clientid
-  }
-  return false;
 }
-// [END iot_mqtt_opts]
 
-static const int kQos = 1;
-static const unsigned long kTimeout = 10000L;
-static const char* kUsername = "unused";
+static void  topic_received(mqtt_message_data_t *md)
+{
+    int i;
+    mqtt_message_t *message = md->message;
+    printf("Received: ");
+    for( i = 0; i < md->topic->lenstring.len; ++i)
+        printf("%c", md->topic->lenstring.data[ i ]);
 
-static const unsigned long kInitialConnectIntervalMillis = 500L;
-static const unsigned long kMaxConnectIntervalMillis = 6000L;
-static const unsigned long kMaxConnectRetryTimeElapsedMillis = 900000L;
-static const float kIntervalMultiplier = 1.5f;
+    printf(" = ");
+    for( i = 0; i < (int)message->payloadlen; ++i)
+        printf("%c", ((char *)(message->payload))[i]);
 
-/**
- * Publish a given message, passed in as payload, to Cloud IoT Core using the
- * values passed to the sample, stored in the global opts structure. Returns
- * the result code from the MQTT client.
- */
-// [START iot_mqtt_publish]
-int Publish(char* payload, int payload_size) {
-  int rc = -1;
-  MQTTClient client = {0};
-  MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
-  MQTTClient_message pubmsg = MQTTClient_message_initializer;
-  MQTTClient_deliveryToken token = {0};
+    printf("\r\n");
+}
 
-  MQTTClient_create(&client, opts.address, opts.clientid,
-      MQTTCLIENT_PERSISTENCE_NONE, NULL);
-  conn_opts.keepAliveInterval = 60;
-  conn_opts.cleansession = 1;
-  conn_opts.username = kUsername;
-  conn_opts.password = CreateJwt(opts.ecpath, opts.projectid);
-  MQTTClient_SSLOptions sslopts = MQTTClient_SSLOptions_initializer;
-
-  sslopts.trustStore = opts.rootpath;
-  sslopts.privateKey = opts.ecpath;
-  conn_opts.ssl = &sslopts;
-
-  unsigned long retry_interval_ms = kInitialConnectIntervalMillis;
-  unsigned long total_retry_time_ms = 0;
-  while ((rc = MQTTClient_connect(client, &conn_opts)) != MQTTCLIENT_SUCCESS) {
-    if (rc == 3) {  // connection refused: server unavailable
-      usleep(retry_interval_ms / 1000);
-      total_retry_time_ms += retry_interval_ms;
-      if (total_retry_time_ms >= kMaxConnectRetryTimeElapsedMillis) {
-        printf("Failed to connect, maximum retry time exceeded.");
-        exit(EXIT_FAILURE);
-      }
-      retry_interval_ms *= kIntervalMultiplier;
-      if (retry_interval_ms > kMaxConnectIntervalMillis) {
-        retry_interval_ms = kMaxConnectIntervalMillis;
-      }
-    } else {
-      printf("Failed to connect, return code %d\n", rc);
-      exit(EXIT_FAILURE);
+static const char *  get_my_id(void)
+{
+    // Use MAC address for Station as unique ID
+    static char my_id[13];
+    static bool my_id_done = false;
+    int8_t i;
+    uint8_t x;
+    if (my_id_done)
+        return my_id;
+    if (!sdk_wifi_get_macaddr(STATION_IF, (uint8_t *)my_id))
+        return NULL;
+    for (i = 5; i >= 0; --i)
+    {
+        x = my_id[i] & 0x0F;
+        if (x > 9) x += 7;
+        my_id[i * 2 + 1] = x + '0';
+        x = my_id[i] >> 4;
+        if (x > 9) x += 7;
+        my_id[i * 2] = x + '0';
     }
-  }
-
-  pubmsg.payload = payload;
-  pubmsg.payloadlen = payload_size;
-  pubmsg.qos = kQos;
-  pubmsg.retained = 0;
-  MQTTClient_publishMessage(client, opts.topic, &pubmsg, &token);
-  printf("Waiting for up to %lu seconds for publication of %s\n"
-          "on topic %s for client with ClientID: %s\n",
-          (kTimeout/1000), opts.payload, opts.topic, opts.clientid);
-  rc = MQTTClient_waitForCompletion(client, token, kTimeout);
-  printf("Message with delivery token %d delivered\n", token);
-  MQTTClient_disconnect(client, 10000);
-  MQTTClient_destroy(&client);
-
-  return rc;
+    my_id[12] = '\0';
+    my_id_done = true;
+    return my_id;
 }
-// [END iot_mqtt_publish]
 
-/**
- * Connects MQTT client and transmits payload.
- */
-// [START iot_mqtt_run]
-int main(int argc, char* argv[]) {
-  OpenSSL_add_all_algorithms();
-  OpenSSL_add_all_digests();
-  OpenSSL_add_all_ciphers();
+static void  mqtt_task(void *pvParameters)
+{
+    int ret         = 0;
+    struct mqtt_network network;
+    mqtt_client_t client   = mqtt_client_default;
+    char mqtt_client_id[20];
+    uint8_t mqtt_buf[100];
+    uint8_t mqtt_readbuf[100];
+    mqtt_packet_connect_data_t data = mqtt_packet_connect_data_initializer;
 
-  if (GetOpts(argc, argv)) {
-    Publish(opts.payload, strlen(opts.payload));
-  } else {
-    Usage();
-  }
+    mqtt_network_new( &network );
+    memset(mqtt_client_id, 0, sizeof(mqtt_client_id));
+    strcpy(mqtt_client_id, "ESP-");
+    strcat(mqtt_client_id, get_my_id());
 
-  EVP_cleanup();
+    while(1) {
+        xSemaphoreTake(wifi_alive, portMAX_DELAY);
+        printf("%s: started\n\r", __func__);
+        printf("%s: (Re)connecting to MQTT server %s ... ",__func__,
+               MQTT_HOST);
+        ret = mqtt_network_connect(&network, MQTT_HOST, MQTT_PORT);
+        if( ret ){
+            printf("error: %d\n\r", ret);
+            taskYIELD();
+            continue;
+        }
+        printf("done\n\r");
+        mqtt_client_new(&client, &network, 5000, mqtt_buf, 100,
+                      mqtt_readbuf, 100);
+
+        data.willFlag       = 0;
+        data.MQTTVersion    = 3;
+        data.clientID.cstring   = CLIENT_ID;
+        data.username.cstring   = MQTT_USER;
+        data.password.cstring   = MQTT_PASS;
+        data.keepAliveInterval  = 10;
+        data.cleansession   = 0;
+        printf("Send MQTT connect ... ");
+        ret = mqtt_connect(&client, &data);
+        if(ret){
+            printf("error: %d\n\r", ret);
+            mqtt_network_disconnect(&network);
+            taskYIELD();
+            continue;
+        }
+        printf("done\r\n");
+        mqtt_subscribe(&client, MQTT_TOPIC, MQTT_QOS1, topic_received);
+        xQueueReset(publish_queue);
+
+        while(1){
+
+            char msg[PUB_MSG_LEN - 1] = "\0";
+            while(xQueueReceive(publish_queue, (void *)msg, 0) ==
+                  pdTRUE){
+                printf("got message to publish\r\n");
+                mqtt_message_t message;
+                message.payload = msg;
+                message.payloadlen = PUB_MSG_LEN;
+                message.dup = 0;
+                message.qos = MQTT_QOS1;
+                message.retained = 0;
+                ret = mqtt_publish(&client, "/beat", &message);
+                if (ret != MQTT_SUCCESS ){
+                    printf("error while publishing message: %d\n", ret );
+                    break;
+                }
+            }
+
+            ret = mqtt_yield(&client, 1000);
+            if (ret == MQTT_DISCONNECTED)
+                break;
+        }
+        printf("Connection dropped, request restart\n\r");
+        mqtt_network_disconnect(&network);
+        taskYIELD();
+    }
 }
-// [END iot_mqtt_run]
+
+static void  wifi_task(void *pvParameters)
+{
+    uint8_t status  = 0;
+    uint8_t retries = 30;
+    struct sdk_station_config config = {
+        .ssid = WIFI_SSID,
+        .password = WIFI_PASS,
+    };
+
+    printf("WiFi: connecting to WiFi\n\r");
+    sdk_wifi_set_opmode(STATION_MODE);
+    sdk_wifi_station_set_config(&config);
+
+    while(1)
+    {
+        while ((status != STATION_GOT_IP) && (retries)){
+            status = sdk_wifi_station_get_connect_status();
+            printf("%s: status = %d\n\r", __func__, status );
+            if( status == STATION_WRONG_PASSWORD ){
+                printf("WiFi: wrong password\n\r");
+                break;
+            } else if( status == STATION_NO_AP_FOUND ) {
+                printf("WiFi: AP not found\n\r");
+                break;
+            } else if( status == STATION_CONNECT_FAIL ) {
+                printf("WiFi: connection failed\r\n");
+                break;
+            }
+            vTaskDelay( 1000 / portTICK_PERIOD_MS );
+            --retries;
+        }
+        if (status == STATION_GOT_IP) {
+            printf("WiFi: Connected\n\r");
+            xSemaphoreGive( wifi_alive );
+            taskYIELD();
+        }
+
+        while ((status = sdk_wifi_station_get_connect_status()) == STATION_GOT_IP) {
+            xSemaphoreGive( wifi_alive );
+            taskYIELD();
+        }
+        printf("WiFi: disconnected\n\r");
+        sdk_wifi_station_disconnect();
+        vTaskDelay( 1000 / portTICK_PERIOD_MS );
+    }
+}
+
+void user_init(void)
+{
+    uart_set_baud(0, 115200);
+    printf("SDK version:%s\n", sdk_system_get_sdk_version());
+
+    vSemaphoreCreateBinary(wifi_alive);
+    publish_queue = xQueueCreate(3, PUB_MSG_LEN);
+    xTaskCreate(&wifi_task, "wifi_task",  256, NULL, 2, NULL);
+    xTaskCreate(&beat_task, "beat_task", 256, NULL, 3, NULL);
+    xTaskCreate(&mqtt_task, "mqtt_task", 1024, NULL, 4, NULL);
+}
