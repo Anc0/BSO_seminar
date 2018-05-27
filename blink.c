@@ -15,17 +15,60 @@
 
 #include <semphr.h>
 
+#include "i2c/i2c.h"
+#include "bmp280/bmp280.h"
+
 
 #define MQTT_HOST ("15kw3c.messaging.internetofthings.ibmcloud.com")
 #define MQTT_PORT 1883
 #define MQTT_USER "use-token-auth"
-#define MQTT_PASS "Hiue1T)1X22R6OIrYQ"
-#define CLIENT_ID "d:15kw3c:temp-sensor:temp-sensor-1"
+//#define MQTT_PASS "Hiue1T)1X22R6OIrYQ"
+//#define CLIENT_ID "d:15kw3c:temp-sensor:temp-sensor-1"
+#define MQTT_PASS "Y-rY**+OF8IsRgmYu_"
+#define CLIENT_ID "d:15kw3c:temp-sensor:temp-sensor-2"
 #define MQTT_TOPIC "iot-2/evt/status/fmt/txt"
+
+#define BUS_I2C		0
+#define SCL 14
+#define SDA 12
 
 SemaphoreHandle_t wifi_alive;
 QueueHandle_t publish_queue;
 #define PUB_MSG_LEN 16
+
+typedef enum {
+	BMP280_TEMPERATURE, BMP280_PRESSURE
+} bmp280_quantity;
+
+bmp280_t bmp280_dev;
+
+// read BMP280 sensor values
+float read_bmp280(bmp280_quantity quantity) {
+
+	float temperature, pressure;
+
+	bmp280_force_measurement(&bmp280_dev);
+	// wait for measurement to complete
+	while (bmp280_is_measuring(&bmp280_dev)) {
+	};
+	bmp280_read_float(&bmp280_dev, &temperature, &pressure, NULL);
+
+	if (quantity == BMP280_TEMPERATURE) {
+		return temperature;
+	} else if (quantity == BMP280_PRESSURE) {
+		return pressure;
+	}
+	return 0;
+}
+
+void temp_task(void *pvParameters) {
+
+	while (1) {
+
+		printf("Temperature: %.2f C\n", read_bmp280(BMP280_TEMPERATURE));
+		vTaskDelay(pdMS_TO_TICKS(200));
+	}
+}
 
 
 static void  beat_task(void *pvParameters)
@@ -214,9 +257,20 @@ void user_init(void)
     uart_set_baud(0, 115200);
     printf("SDK version:%s\n", sdk_system_get_sdk_version());
 
+    i2c_init(BUS_I2C, SCL, SDA, I2C_FREQ_100K);
+
+    // BMP280 configuration
+    bmp280_params_t params;
+    bmp280_init_default_params(&params);
+    params.mode = BMP280_MODE_FORCED;
+    bmp280_dev.i2c_dev.bus = BUS_I2C;
+    bmp280_dev.i2c_dev.addr = BMP280_I2C_ADDRESS_0;
+    bmp280_init(&bmp280_dev, &params);
+
     vSemaphoreCreateBinary(wifi_alive);
     publish_queue = xQueueCreate(3, PUB_MSG_LEN);
     xTaskCreate(&wifi_task, "wifi_task",  256, NULL, 2, NULL);
     xTaskCreate(&beat_task, "beat_task", 256, NULL, 3, NULL);
     xTaskCreate(&mqtt_task, "mqtt_task", 1024, NULL, 4, NULL);
+    //xTaskCreate(&temp_task, "temp_task", 1024, NULL, 4, NULL);
 }
