@@ -61,15 +61,6 @@ float read_bmp280(bmp280_quantity quantity) {
 	return 0;
 }
 
-void temp_task(void *pvParameters) {
-
-	while (1) {
-
-		printf("Temperature: %.2f C\n", read_bmp280(BMP280_TEMPERATURE));
-		vTaskDelay(pdMS_TO_TICKS(200));
-	}
-}
-
 
 static void  beat_task(void *pvParameters)
 {
@@ -164,6 +155,27 @@ static void  mqtt_task(void *pvParameters)
         data.password.cstring   = MQTT_PASS;
         data.keepAliveInterval  = 10;
         data.cleansession   = 0;
+	
+	printf("Measuring temperature...\n");
+	printf("Temperature: %.2f C\n", read_bmp280(BMP280_TEMPERATURE));
+	printf("done\n");
+
+	char msg[PUB_MSG_LEN - 1] = "\0";
+
+	int ret = snprintf(msg, sizeof msg, "%f", read_bmp280(BMP280_TEMPERATURE));
+
+	msg[PUB_MSG_LEN - 1] = "\0";
+
+	if (ret < 0) {
+	printf("FAILURE");
+	}
+	if (ret >= sizeof msg) {
+	printf("INCORRECT SIZE");
+	} else {
+	printf("GOVNO\n");
+	printf("Message: %s\n", msg);
+	}
+
         printf("Send MQTT connect ... ");
         ret = mqtt_connect(&client, &data);
         if(ret){
@@ -177,8 +189,21 @@ static void  mqtt_task(void *pvParameters)
         xQueueReset(publish_queue);
 
         while(1){
+	    char msg[PUB_MSG_LEN - 1] = "\0";
 
-            char msg[PUB_MSG_LEN - 1] = "\0";
+            int ret = snprintf(msg, sizeof msg, "%f", read_bmp280(BMP280_TEMPERATURE));
+
+	    if (ret < 0) {
+	        printf("FAILURE");
+	    }
+	    if (ret >= sizeof msg) {
+	    	printf("INCORRECT SIZE");
+            } else {
+		printf("GOVNO");
+		printf(msg);
+	    }
+
+            
             while(xQueueReceive(publish_queue, (void *)msg, 0) ==
                   pdTRUE){
                 printf("got message to publish\r\n");
@@ -272,5 +297,4 @@ void user_init(void)
     xTaskCreate(&wifi_task, "wifi_task",  256, NULL, 2, NULL);
     xTaskCreate(&beat_task, "beat_task", 256, NULL, 3, NULL);
     xTaskCreate(&mqtt_task, "mqtt_task", 1024, NULL, 4, NULL);
-    //xTaskCreate(&temp_task, "temp_task", 1024, NULL, 4, NULL);
 }
