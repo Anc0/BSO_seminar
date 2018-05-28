@@ -18,6 +18,8 @@
 #include "i2c/i2c.h"
 #include "bmp280/bmp280.h"
 
+//#include "RF24/nRF24L01.h"
+//#include "RF24/RF24.h"
 
 #define MQTT_HOST ("15kw3c.messaging.internetofthings.ibmcloud.com")
 #define MQTT_PORT 1883
@@ -36,9 +38,18 @@
 #define SCL 14
 #define SDA 12
 
-SemaphoreHandle_t wifi_alive;
+#define CE_NRF		3
+#define CS_NRF		0
+#define channel		33
+
 QueueHandle_t publish_queue;
+const uint8_t address[] = { 0x01, 0x23, 0x45, 0x67, 0x89 };
+//RF24 radio(CE_NRF, CS_NRF);
+
+SemaphoreHandle_t wifi_alive;
 #define PUB_MSG_LEN 16
+
+#define TRANSMIT 0
 
 typedef enum {
 	BMP280_TEMPERATURE, BMP280_PRESSURE
@@ -220,6 +231,62 @@ static void  wifi_task(void *pvParameters)
     }
 }
 
+
+
+// Inter device communication
+// transmit data
+/*void transmit_nrf24(void *pvParameters) {
+	char tx_buffer[PUB_MSG_LEN];
+
+	while(1) {
+		int ret = snprintf(tx_buffer, sizeof tx_buffer, "%f", read_bmp280(BMP280_TEMPERATURE));
+
+		tx_buffer[PUB_MSG_LEN - 1] = "\0";
+
+		if (ret < 0) {
+		    printf("FAILURE");
+		}
+		if (ret >= sizeof tx_buffer) {
+		    printf("INCORRECT SIZE");
+		} else {
+		    printf("Message: %s\n", tx_buffer);
+		}
+		radio.powerUp();
+		radio.stopListening();
+		radio.write(&tx_buffer, sizeof(tx_buffer));
+		radio.powerDown();
+
+		
+	}
+
+}*/
+
+// receive data
+/*void receive_nrf24(void *pvParameters) {
+	static char msg[PUB_MSG_LEN];
+	static int count = 0;
+
+	while (1) {
+
+		if (radio.available()) {
+			radio.read(&rx_data, sizeof(rx_data));
+			printf("Received message: %s\n", rx_data);
+
+			// publish to MQTT topic
+			snprintf(msg, PUB_MSG_LEN, "%s %d\r\n", rx_data, count++);
+			if (xQueueSend(publish_queue, (void *)msg, 0) == pdFALSE) {
+				printf("Publish queue overflow.\r\n");
+			}
+		}
+
+		// sleep for 200 ms
+		radio.powerDown();
+		vTaskDelay(pdMS_TO_TICKS(200));
+		radio.powerUp();
+	}
+}*/
+
+
 void user_init(void)
 {
     uart_set_baud(0, 115200);
@@ -235,8 +302,22 @@ void user_init(void)
     bmp280_dev.i2c_dev.addr = BMP280_I2C_ADDRESS_0;
     bmp280_init(&bmp280_dev, &params);
 
+    // NRF config
+    //gpio_enable(SCL, GPIO_OUTPUT);
+    //gpio_enable(CS_NRF, GPIO_OUTPUT);
+    // radio configuration
+    //radio.begin();
+    //radio.setChannel(channel);
+
     vSemaphoreCreateBinary(wifi_alive);
     publish_queue = xQueueCreate(3, PUB_MSG_LEN);
+
     xTaskCreate(&wifi_task, "wifi_task",  256, NULL, 2, NULL);
     xTaskCreate(&mqtt_task, "mqtt_task", 1024, NULL, 4, NULL);
+    /*if(TRANSMIT==1) {
+	xTaskCreate(transmit_nrf24, "transmit_task", 1024, NULL, 4, NULL);
+    } else {
+    	xTaskCreate(receive_nrf24, "receive_task", 1024, NULL, 4, NULL);
+    }*/
+
 }
