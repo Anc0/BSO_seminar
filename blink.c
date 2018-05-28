@@ -46,7 +46,6 @@ typedef enum {
 
 bmp280_t bmp280_dev;
 
-// read BMP280 sensor values
 float read_bmp280(bmp280_quantity quantity) {
 
 	float temperature, pressure;
@@ -65,37 +64,6 @@ float read_bmp280(bmp280_quantity quantity) {
 	return 0;
 }
 
-
-static void  beat_task(void *pvParameters)
-{
-    TickType_t xLastWakeTime = xTaskGetTickCount();
-    char msg[PUB_MSG_LEN];
-    int count = 0;
-
-    while (1) {
-        vTaskDelayUntil(&xLastWakeTime, 10000 / portTICK_PERIOD_MS);
-        printf("beat\r\n");
-        snprintf(msg, PUB_MSG_LEN, "Beat %d\r\n", count++);
-        if (xQueueSend(publish_queue, (void *)msg, 0) == pdFALSE) {
-            printf("Publish queue overflow.\r\n");
-        }
-    }
-}
-
-static void  topic_received(mqtt_message_data_t *md)
-{
-    int i;
-    mqtt_message_t *message = md->message;
-    printf("Received: ");
-    for( i = 0; i < md->topic->lenstring.len; ++i)
-        printf("%c", md->topic->lenstring.data[ i ]);
-
-    printf(" = ");
-    for( i = 0; i < (int)message->payloadlen; ++i)
-        printf("%c", ((char *)(message->payload))[i]);
-
-    printf("\r\n");
-}
 
 static const char *  get_my_id(void)
 {
@@ -171,13 +139,12 @@ static void  mqtt_task(void *pvParameters)
 	msg[PUB_MSG_LEN - 1] = "\0";
 
 	if (ret < 0) {
-	printf("FAILURE");
+	    printf("FAILURE");
 	}
 	if (ret >= sizeof msg) {
-	printf("INCORRECT SIZE");
+	    printf("INCORRECT SIZE");
 	} else {
-	printf("GOVNO\n");
-	printf("Message: %s\n", msg);
+	    printf("Message: %s\n", msg);
 	}
 
         printf("Send MQTT connect ... ");
@@ -191,7 +158,7 @@ static void  mqtt_task(void *pvParameters)
         printf("done\r\n");
 
         mqtt_message_t message;
-        message.payload = "temperature: 18.5";
+        message.payload = msg;
         message.payloadlen = PUB_MSG_LEN;
         message.dup = 0;
         message.qos = MQTT_QOS1;
@@ -201,54 +168,8 @@ static void  mqtt_task(void *pvParameters)
             printf("error while publishing message: %d\n", ret );
             break;
         }
-
-        //mqtt_network_disconnect(&network);
-        
-
-        /*
-        mqtt_subscribe(&client, MQTT_TOPIC, MQTT_QOS1, topic_received);
-        xQueueReset(publish_queue);
-
-        while(1){
-	    char msg[PUB_MSG_LEN - 1] = "\0";
-
-            int ret = snprintf(msg, sizeof msg, "%f", read_bmp280(BMP280_TEMPERATURE));
-
-	    if (ret < 0) {
-	        printf("FAILURE");
-	    }
-	    if (ret >= sizeof msg) {
-	    	printf("INCORRECT SIZE");
-            } else {
-		printf("GOVNO");
-		printf(msg);
-	    }
-
-            
-            while(xQueueReceive(publish_queue, (void *)msg, 0) ==
-                  pdTRUE){
-                printf("got message to publish\r\n");
-                mqtt_message_t message;
-                message.payload = msg;
-                message.payloadlen = PUB_MSG_LEN;
-                message.dup = 0;
-                message.qos = MQTT_QOS1;
-                message.retained = 0;
-                ret = mqtt_publish(&client, MQTT_TOPIC, &message);
-                if (ret != MQTT_SUCCESS ){
-                    printf("error while publishing message: %d\n", ret );
-                    break;
-                }
-            }
-
-            ret = mqtt_yield(&client, 1000);
-            if (ret == MQTT_DISCONNECTED)
-                break;
-        }
-        printf("Connection dropped, request restart\n\r");
         mqtt_network_disconnect(&network);
-        taskYIELD();
-        */
+	vTaskDelay( 60000 / portTICK_PERIOD_MS );
     }
 }
 
@@ -317,6 +238,5 @@ void user_init(void)
     vSemaphoreCreateBinary(wifi_alive);
     publish_queue = xQueueCreate(3, PUB_MSG_LEN);
     xTaskCreate(&wifi_task, "wifi_task",  256, NULL, 2, NULL);
-    xTaskCreate(&beat_task, "beat_task", 256, NULL, 3, NULL);
     xTaskCreate(&mqtt_task, "mqtt_task", 1024, NULL, 4, NULL);
 }
