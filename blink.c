@@ -27,6 +27,10 @@
 #define MQTT_PASS "Y-rY**+OF8IsRgmYu_"
 #define CLIENT_ID "d:15kw3c:temp-sensor:temp-sensor-2"
 #define MQTT_TOPIC "iot-2/evt/status/fmt/txt"
+//#define MQTT_USER "a-15kw3c-h3c5qm5b01"
+//#define MQTT_PASS "*D_A7*-ABa6RJgdd1p"
+//#define CLIENT_ID "a:15kw3c:temp-app-1"
+//#define MQTT_TOPIC "iot-2/type/temp-sensor/id/temp-sensor-1/evt/status/fmt/txt"
 
 #define BUS_I2C		0
 #define SCL 14
@@ -185,6 +189,23 @@ static void  mqtt_task(void *pvParameters)
             continue;
         }
         printf("done\r\n");
+
+        mqtt_message_t message;
+        message.payload = "temperature: 18.5";
+        message.payloadlen = PUB_MSG_LEN;
+        message.dup = 0;
+        message.qos = MQTT_QOS1;
+        message.retained = 0;
+        ret = mqtt_publish(&client, MQTT_TOPIC, &message);
+        if (ret != MQTT_SUCCESS ){
+            printf("error while publishing message: %d\n", ret );
+            break;
+        }
+
+        //mqtt_network_disconnect(&network);
+        
+
+        /*
         mqtt_subscribe(&client, MQTT_TOPIC, MQTT_QOS1, topic_received);
         xQueueReset(publish_queue);
 
@@ -213,7 +234,7 @@ static void  mqtt_task(void *pvParameters)
                 message.dup = 0;
                 message.qos = MQTT_QOS1;
                 message.retained = 0;
-                ret = mqtt_publish(&client, "/beat", &message);
+                ret = mqtt_publish(&client, MQTT_TOPIC, &message);
                 if (ret != MQTT_SUCCESS ){
                     printf("error while publishing message: %d\n", ret );
                     break;
@@ -227,6 +248,7 @@ static void  mqtt_task(void *pvParameters)
         printf("Connection dropped, request restart\n\r");
         mqtt_network_disconnect(&network);
         taskYIELD();
+        */
     }
 }
 
